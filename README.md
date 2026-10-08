@@ -15,11 +15,12 @@ The architecture is split into a simple, automated backend flow:
 
 1. **Live API Ingestion:** The script sends a dynamic request to the `data.gov.sg` datastore endpoint to fetch live records for all registered government markets and hawker centers.
 2. **Postal Standardization:** Cleans the raw data strings and applies proper 6-digit leading-zero padding to ensure all Singapore postal codes are formatted correctly.
-3. **Geocoding Engine:** Loops through the unique postal codes to query the free **Singapore Land Authority (OneMap) API**, instantly translating flat addresses into exact GPS coordinates (Latitude and Longitude).
+3. **Geocoding Engine:** Loops through the unique postal codes to query the free **Singapore Land Authority (OneMap) API**, instantly translating flat addresses into exact GPS coordinates (Latitude and Longitude). Results are saved to `data/onemap_geocode_cache.csv` so later runs only request codes that are new or previously failed. Set `FORCE_GEOCODE=true` to refresh the whole cache.
 4. **Interactive Mapping:** Groups the coordinates by planning sectors and uses **Folium** to plot individual markers and density heat-layers directly inside the notebook.
 
 ## Project Structure
 * `/notebooks` - Full Python/Pandas codebase formatted for Databricks.
+* `/data` - Cached OneMap lat/lon by postal code (safe to commit; no secrets).
 * `/output` - Self-contained interactive `.html` map file (downloadable to view in-browser).
 
 ## Optional credentials

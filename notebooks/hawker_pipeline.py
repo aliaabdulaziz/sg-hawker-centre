@@ -275,10 +275,15 @@ display(hawker_df[["name_of_centre", "location_of_centre", "postal_code", "plann
 # =============================================================================
 # CELL 3 — Geocoding Engine (SLA OneMap, unique postal codes)
 # =============================================================================
-# One request per unique 6-digit postal code, with a polite 0.1s pause.
-# Results are merged back so every hawker centre inherits lat/lon.
+# Loads data/onemap_geocode_cache.csv first. Only postal codes missing from the
+# cache (or previously failed with status "error") hit OneMap, with a 0.1s pause.
+# The cache is rewritten after each new lookup so a stopped run keeps progress.
+# Set widget/env FORCE_GEOCODE=true to ignore the cache and refresh everything.
 
 GEOCODE_SLEEP_SECONDS = 0.1
+GEOCODE_CACHE_PATH = Path("data") / "onemap_geocode_cache.csv"
+FORCE_GEOCODE = optional_secret("force_geocode", "FORCE_GEOCODE").lower() in {"1", "true", "yes"}
+CACHE_COLUMNS = ["postal_code", "latitude", "longitude", "geocode_status"]
 
 
 def _onemap_headers() -> Dict[str, str]:
@@ -315,37 +320,84 @@ def geocode_postal_code(postal_code: str, session: requests.Session = HTTP) -> O
         return None
 
 
-def geocode_unique_postals(postal_codes: Iterable[str]) -> pd.DataFrame:
-    """Loop unique postal codes; sleep 0.1s between OneMap calls."""
+def load_geocode_cache(path: Path) -> pd.DataFrame:
+    """Read cached lat/lon. Postal codes are re-padded — CSV readers drop leading zeros."""
+    if not path.is_file():
+        return pd.DataFrame(columns=CACHE_COLUMNS)
+    cache = pd.read_csv(path, dtype={"postal_code": str})
+    cache["postal_code"] = cache["postal_code"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(6)
+    for col in ("latitude", "longitude"):
+        if col in cache.columns:
+            cache[col] = pd.to_numeric(cache[col], errors="coerce")
+    if "geocode_status" not in cache.columns:
+        cache["geocode_status"] = cache["latitude"].notna().map({True: "ok", False: "error"})
+    cache = cache.drop_duplicates(subset=["postal_code"], keep="last")
+    return cache[CACHE_COLUMNS]
+
+
+def save_geocode_cache(cache: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    persist = cache.copy()
+    persist["postal_code"] = persist["postal_code"].astype(str).str.zfill(6)
+    persist[CACHE_COLUMNS].drop_duplicates(subset=["postal_code"], keep="last").sort_values(
+        "postal_code"
+    ).to_csv(path, index=False)
+
+
+def lookup_one_postal(postal_code: str) -> Dict[str, Any]:
+    try:
+        coords = geocode_postal_code(postal_code)
+        if coords:
+            return {"postal_code": postal_code, **coords, "geocode_status": "ok"}
+        logger.warning("OneMap returned no geometry for postal %s", postal_code)
+        return {"postal_code": postal_code, "latitude": None, "longitude": None, "geocode_status": "not_found"}
+    except requests.RequestException as exc:
+        logger.error("OneMap request failed for postal %s: %s", postal_code, exc)
+        return {"postal_code": postal_code, "latitude": None, "longitude": None, "geocode_status": "error"}
+
+
+def geocode_unique_postals(
+    postal_codes: Iterable[str],
+    cache_path: Path = GEOCODE_CACHE_PATH,
+    force_refresh: bool = False,
+) -> pd.DataFrame:
+    """Reuse on-disk cache; OneMap is called only for new or previously failed codes."""
     unique_codes = sorted({code for code in postal_codes if isinstance(code, str) and code})
-    rows: List[Dict[str, Any]] = []
+    cache = pd.DataFrame(columns=CACHE_COLUMNS) if force_refresh else load_geocode_cache(cache_path)
 
-    for index, postal_code in enumerate(unique_codes, start=1):
-        try:
-            coords = geocode_postal_code(postal_code)
-            if coords:
-                rows.append({"postal_code": postal_code, **coords, "geocode_status": "ok"})
-            else:
-                rows.append(
-                    {"postal_code": postal_code, "latitude": None, "longitude": None, "geocode_status": "not_found"}
-                )
-                logger.warning("OneMap returned no geometry for postal %s", postal_code)
-        except requests.RequestException as exc:
-            logger.error("OneMap request failed for postal %s: %s", postal_code, exc)
-            rows.append(
-                {"postal_code": postal_code, "latitude": None, "longitude": None, "geocode_status": "error"}
-            )
+    reusable = cache[cache["geocode_status"].isin(["ok", "not_found"])] if not cache.empty else cache
+    cached_ok = set(reusable["postal_code"]) if not reusable.empty else set()
+    to_fetch = [code for code in unique_codes if code not in cached_ok]
 
-        if index < len(unique_codes):
+    logger.info(
+        "Geocode cache: %s reusable / %s unique postals (%s to fetch%s)",
+        len(cached_ok & set(unique_codes)),
+        len(unique_codes),
+        len(to_fetch),
+        "; FORCE_GEOCODE" if force_refresh else "",
+    )
+
+    running = cache.copy()
+    new_rows: List[Dict[str, Any]] = []
+    for index, postal_code in enumerate(to_fetch, start=1):
+        row = lookup_one_postal(postal_code)
+        new_rows.append(row)
+        running = pd.concat([running, pd.DataFrame([row])], ignore_index=True)
+        save_geocode_cache(running, cache_path)
+        if index < len(to_fetch):
             time.sleep(GEOCODE_SLEEP_SECONDS)
-        if index % 25 == 0 or index == len(unique_codes):
-            logger.info("Geocoded %s / %s unique postal codes", index, len(unique_codes))
+        if index % 25 == 0 or index == len(to_fetch):
+            logger.info("Fetched %s / %s uncached postal codes from OneMap", index, len(to_fetch))
 
-    return pd.DataFrame(rows)
+    geocode_df = pd.concat([reusable, pd.DataFrame(new_rows)], ignore_index=True) if new_rows else reusable.copy()
+    needed = pd.DataFrame({"postal_code": unique_codes})
+    geocode_df = needed.merge(geocode_df, on="postal_code", how="left")
+    save_geocode_cache(running if not running.empty else geocode_df, cache_path)
+    return geocode_df
 
 
 unique_postals = hawker_df["postal_code"].dropna().astype(str)
-geocode_df = geocode_unique_postals(unique_postals)
+geocode_df = geocode_unique_postals(unique_postals, force_refresh=FORCE_GEOCODE)
 hawker_geo_df = hawker_df.merge(geocode_df, on="postal_code", how="left")
 
 mapped = hawker_geo_df["latitude"].notna().sum()
