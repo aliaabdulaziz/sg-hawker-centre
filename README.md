@@ -22,4 +22,11 @@ The architecture is split into a simple, automated backend flow:
 * `/notebooks` - Full Python/Pandas codebase formatted for Databricks.
 * `/output` - Self-contained interactive `.html` map file (downloadable to view in-browser).
 
+## Optional credentials
+This is a public portfolio repo. Do not commit API keys.
+
+The map runs with **OpenStreetMap** tiles by default (no key). To use watermark-free Carto Voyager rasters, set `CARTO_TILE_KEY` in the environment or a Databricks widget named `carto_tile_key`. An optional OneMap token can be set the same way (`ONEMAP_TOKEN` / `onemap_token`). Copy `.env.example` to `.env` for local runs.
+
+If you generate `output/hawker_density_map.html` with a Carto key, that HTML will contain the key — do not commit it.
+
 *Jom makan!*

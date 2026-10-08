@@ -39,12 +39,40 @@ PAGE_SIZE = 100
 HTTP_TIMEOUT = 30
 USER_AGENT = "sg-hawker-centre-pipeline/1.0 (databricks; educational)"
 
-# Optional OneMap token (header required by current SLA docs). Works without a
-# token on many Community Edition runs; set a widget/env/secret when available.
-try:
-    ONEMAP_TOKEN = dbutils.widgets.get("onemap_token")  # noqa: F821
-except Exception:
-    ONEMAP_TOKEN = os.environ.get("ONEMAP_TOKEN", "").strip()
+def load_dotenv_file(path: Path = Path(".env")) -> None:
+    """Load KEY=VALUE pairs from a local .env without adding a dependency."""
+    if not path.is_file():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip("'").strip('"')
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def optional_secret(widget_name: str, env_name: str) -> str:
+    """Read a non-committed credential from a Databricks widget, else the environment."""
+    try:
+        value = str(dbutils.widgets.get(widget_name) or "")  # noqa: F821
+        if value.strip():
+            return value.strip()
+    except Exception:
+        pass
+    return os.environ.get(env_name, "").strip()
+
+
+load_dotenv_file()
+
+
+# Optional. Never commit these values — this repo is public.
+# Databricks: dbutils.widgets.text("onemap_token" / "carto_tile_key", "")
+# Local: export ONEMAP_TOKEN=... CARTO_TILE_KEY=...
+ONEMAP_TOKEN = optional_secret("onemap_token", "ONEMAP_TOKEN")
+CARTO_TILE_KEY = optional_secret("carto_tile_key", "CARTO_TILE_KEY")
 
 
 def build_http_session() -> requests.Session:
@@ -333,6 +361,21 @@ display(hawker_geo_df.head(10))  # noqa: F821
 
 SG_MAP_CENTER = (1.3521, 103.8198)
 OUTPUT_PATH = Path("output") / "hawker_density_map.html"
+CARTO_TILE_ATTR = (
+    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> '
+    'contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+)
+
+
+def resolve_basemap(carto_key: str):
+    """Keyed Carto Voyager when CARTO_TILE_KEY is set; otherwise OSM (no key, no watermark)."""
+    if carto_key:
+        tile_url = (
+            "https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"
+            f"?key={carto_key}"
+        )
+        return tile_url, CARTO_TILE_ATTR
+    return "OpenStreetMap", None
 
 
 def aggregate_by_planning_sector(df: pd.DataFrame) -> pd.DataFrame:
@@ -362,13 +405,17 @@ def build_hawker_map(df: pd.DataFrame, sector_df: pd.DataFrame) -> folium.Map:
     if mapped_df.empty:
         raise RuntimeError("No geocoded hawker centres available to plot.")
 
-    folium_map = folium.Map(
+    tiles, tile_attr = resolve_basemap(CARTO_TILE_KEY)
+    map_kwargs = dict(
         location=list(SG_MAP_CENTER),
         zoom_start=12,
-        tiles="CartoDB positron",
+        tiles=tiles,
         control_scale=True,
         prefer_canvas=True,
     )
+    if tile_attr:
+        map_kwargs["attr"] = tile_attr
+    folium_map = folium.Map(**map_kwargs)
 
     cluster = MarkerCluster(name="Hawker centres").add_to(folium_map)
     type_colours = {"HC": "#d9480f", "MHC": "#1c7ed6"}
