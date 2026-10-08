@@ -4,14 +4,10 @@ Dynamic analytics pipeline built in Databricks (Community Edition). Automates da
 # Singapore Hawker Density Lakehouse Pipeline
 **Tech Stack:** Cloud Databricks (Community Edition), Python (Pandas/Requests), Live Government API (`data.gov.sg`), Spatial Geocoding (`OneMap API`), Folium
 
----
-
 ## The Story Behind the Map
 I recently relocated from Malaysia to Singapore! As a data analyst (and a foodie!), I wanted this project to solve a very practical mission: **How can I use data to map out the country's hawker infrastructure and find the ultimate food hotspots (or hidden food deserts)?**
 
 Instead of downloading a static spreadsheet, this project is built as a programmatic pipeline running inside a **Databricks cloud lakehouse environment**. It automatically hooks into live government servers, cleans up local address fields, and drops them into an interactive spatial dashboard.
-
----
 
 ## The Data Pipeline & Workflow
 
@@ -22,12 +18,8 @@ The architecture is split into a simple, automated backend flow:
 3. **Geocoding Engine:** Loops through the unique postal codes to query the free **Singapore Land Authority (OneMap) API**, instantly translating flat addresses into exact GPS coordinates (Latitude and Longitude).
 4. **Interactive Mapping:** Groups the coordinates by planning sectors and uses **Folium** to plot individual markers and density heat-layers directly inside the notebook.
 
----
-
 ## Project Structure
 * `/notebooks` - Full Python/Pandas codebase formatted for Databricks.
 * `/output` - Self-contained interactive `.html` map file (downloadable to view in-browser).
-
----
 
 *Jom makan!*
